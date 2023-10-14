@@ -28,7 +28,7 @@ std::vector<std::string> rtp_file_list;
 
 void populate_rtp_buffer_list() {
   for (const auto &entry :
-       std::filesystem::directory_iterator("/Users/duboisea/rtp-pkts")) {
+       std::filesystem::directory_iterator("/Users/sean/rtp-pkts")) {
     rtp_file_list.push_back(entry.path());
   }
   std::sort(rtp_file_list.begin(), rtp_file_list.end());
@@ -109,6 +109,7 @@ int main() {
 
   AVDictionary *avformat_open_input_options = nullptr;
   av_dict_set(&avformat_open_input_options, "sdp_flags", "custom_io", 0);
+  av_dict_set_int(&avformat_open_input_options, "reorder_queue_size", 0, 0);
 
   int status = 0;
   if ((status = avformat_open_input(&avformat_context, "", nullptr,
@@ -157,12 +158,14 @@ int main() {
       av_codec_context = av_codec_context_video;
     }
 
-    if ((status = avcodec_send_packet(av_codec_context, &packet) != 0)) {
+    status = avcodec_send_packet(av_codec_context, &packet);
+    if (status != AVERROR_INVALIDDATA && status != 0) {
       throw std::runtime_error("Failed to avcodec_send_packet " +
                                print_av_error(status));
     }
 
-    if ((status = avcodec_receive_frame(av_codec_context, frame)) != 0) {
+    status = avcodec_receive_frame(av_codec_context, frame);
+    if (status != AVERROR(EAGAIN) && status != 0) {
       throw std::runtime_error("Failed to avcodec_receive_frame " +
                                print_av_error(status));
     }
