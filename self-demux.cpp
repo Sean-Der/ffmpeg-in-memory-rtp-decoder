@@ -16,7 +16,7 @@ extern "C" {
 #include "libavutil/mem.h"
 }
 
-const auto buff_size = 1024 * 32;
+const auto buff_size = 1024 * 1024 * 32;
 const auto naluTypeBitmask = std::byte(0x1F);
 const auto naluTypeSTAPA = std::byte(24);
 const auto naluTypeFUA = std::byte(28);
