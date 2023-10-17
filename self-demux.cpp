@@ -22,74 +22,77 @@ const auto naluTypeSTAPA = 24;
 const auto naluTypeFUA = 28;
 const auto stapaHeaderSize = 1;
 const auto fuaHeaderSize = 2;
+const auto rtpHeaderSize = 12;
 
-const auto fuaEndBitmask = 0x40;
-const auto naluRefIdcBitmask = 0x60;
+const auto fuaEndBitmask = std::byte(0x40);
+const auto naluRefIdcBitmask = std::byte(0x60);
 
-std::vector<std::vector<char>> h264_frames;
-std::vector<std::vector<char>> rtp_pkts;
-std::vector<char> fua_buffer;
+std::vector<std::vector<std::byte>> h264_frames;
+std::vector<std::vector<std::byte>> rtp_pkts;
+std::vector<std::byte> fua_buffer;
 
-std::vector<char> h264_nalu_header() { return std::vector<char>{0, 0, 0, 1}; }
+std::vector<std::byte> h264_nalu_header()
+{
+	return std::vector<std::byte>{std::byte(0), std::byte(0), std::byte(0),
+				      std::byte(1)};
+}
 
 void depacketize_h264() {
-  auto pkt = reinterpret_cast<const rtc::RtpHeader *>(rtp_pkts[0].data());
-  auto headerSize = pkt->getBody() - rtp_pkts[0].data();
-  auto payload = pkt->getBody();
-  auto payloadSize = rtp_pkts[0].size() - headerSize;
+	auto pkt = rtp_pkts[0];
+	auto pktParsed = reinterpret_cast<const rtc::RtpHeader *>(pkt.data());
+	auto headerSize = rtpHeaderSize + pktParsed->csrcCount() +
+			  pktParsed->getExtensionHeaderSize();
+	auto naluType = pktParsed->getBody()[0] & naluTypeBitmask;
 
-  auto naluType = pkt->getBody()[0] & naluTypeBitmask;
+	if (naluType > 0 && naluType < 24) {
+		auto h264_nalu = h264_nalu_header();
+		std::copy(pkt.begin() + headerSize, pkt.end(),
+			  std::back_inserter(h264_nalu));
+		h264_frames.push_back(h264_nalu);
+	} else if (naluType == naluTypeSTAPA) {
+		auto currOffset = stapaHeaderSize + headerSize;
+		while (currOffset < pkt.size()) {
+			auto h264_nalu = h264_nalu_header();
 
-  if (naluType > 0 && naluType < 24) {
-    auto h264_nalu = h264_nalu_header();
-    std::copy(payload, payload + payloadSize, std::back_inserter(h264_nalu));
-    h264_frames.push_back(h264_nalu);
+			auto naluSize = uint16_t(pkt.at(currOffset)) << 8 | uint8_t(pkt.at(currOffset + 1));
 
-  } else if (naluType == naluTypeSTAPA) {
-    std::vector<char> h264_nalu;
+			currOffset += 2;
 
-    auto currOffset = stapaHeaderSize;
-    while (currOffset < payloadSize) {
-      for (const auto &c : h264_nalu_header()) {
-        h264_nalu.push_back(c);
-      }
+			if (pkt.size() < currOffset + naluSize) {
+				throw std::runtime_error(
+					"STAP-A declared size is larger then buffer");
+			}
 
-      auto naluSize =
-          uint16_t(payload[currOffset]) << 8 | uint8_t(payload[currOffset + 1]);
-      currOffset += 2;
+			std::copy(pkt.begin() + currOffset,
+				  pkt.begin() + currOffset + naluSize,
+				  std::back_inserter(h264_nalu));
+			currOffset += naluSize;
 
-      if (payloadSize < currOffset + naluSize) {
-        throw std::runtime_error("STAP-A declared size is larger then buffer");
-      }
+			h264_frames.push_back(h264_nalu);
+		}
+	} else if (naluType == naluTypeFUA) {
+		if (fua_buffer.size() == 0) {
+			fua_buffer = h264_nalu_header();
+			fua_buffer.push_back(std::byte(0));
+		}
 
-      std::copy(payload + currOffset, payload + currOffset + naluSize,
-                std::back_inserter(h264_nalu));
-      currOffset += naluSize;
-    }
+		std::copy(pkt.begin() + headerSize + fuaHeaderSize, pkt.end(),
+			  std::back_inserter(fua_buffer));
 
-    h264_frames.push_back(h264_nalu);
+		if ((pkt.at(headerSize + 1) & fuaEndBitmask) != std::byte(0)) {
+			auto naluRefIdc = pkt.at(headerSize) &
+					  naluRefIdcBitmask;
+			auto fragmentedNaluType = pkt.at(headerSize + 1) &
+						  std::byte(naluTypeBitmask);
 
-  } else if (naluType == naluTypeFUA) {
-    if (fua_buffer.size() == 0) {
-      fua_buffer = h264_nalu_header();
-      fua_buffer.push_back(0);
-    }
+			fua_buffer[4] = naluRefIdc | fragmentedNaluType;
 
-    std::copy(payload + fuaHeaderSize, payload + payloadSize,
-              std::back_inserter(fua_buffer));
-
-    if ((payload[1] & fuaEndBitmask) != 0) {
-      auto naluRefIdc = payload[0] & naluRefIdcBitmask;
-      auto fragmentedNaluType = payload[1] & naluTypeBitmask;
-
-      fua_buffer[4] = naluRefIdc | fragmentedNaluType;
-
-      h264_frames.push_back(fua_buffer);
-      fua_buffer = std::vector<char>{};
-    }
-  } else {
-    throw std::runtime_error("Unknown H264 RTP Packetization");
-  }
+			h264_frames.push_back(fua_buffer);
+			fua_buffer = std::vector<std::byte>{};
+		}
+	} else {
+		throw std::runtime_error("Unknown H264 RTP Packetization");
+	}
 }
 
 void populate_buffer_list() {
@@ -101,15 +104,15 @@ void populate_buffer_list() {
     auto n = fread(buffer, sizeof(char), 1500, fd);
     fclose(fd);
 
-    rtp_pkts.push_back(std::vector<char>(buffer, buffer + n));
+    rtp_pkts.push_back(std::vector<std::byte>(reinterpret_cast<std::byte*>(buffer), reinterpret_cast<std::byte*>(buffer + n)));
   }
 
-  std::sort(rtp_pkts.begin(), rtp_pkts.end(),
-            [](auto const &pr1, auto const &pr2) {
-              auto pkt1 = reinterpret_cast<const rtc::RtpHeader *>(pr1.data());
-              auto pkt2 = reinterpret_cast<const rtc::RtpHeader *>(pr2.data());
-              return pkt2->seqNumber() > pkt1->seqNumber();
-            });
+   std::sort(rtp_pkts.begin(), rtp_pkts.end(),
+             [](auto const &pr1, auto const &pr2) {
+               auto pkt1 = reinterpret_cast<const rtc::RtpHeader *>(pr1.data());
+               auto pkt2 = reinterpret_cast<const rtc::RtpHeader *>(pr2.data());
+               return pkt2->seqNumber() > pkt1->seqNumber();
+             });
 
   while (true) {
     uint32_t currentTimestamp = 0;
