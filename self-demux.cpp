@@ -17,9 +17,9 @@ extern "C" {
 }
 
 const auto buff_size = 1024 * 32;
-const auto naluTypeBitmask = 0x1F;
-const auto naluTypeSTAPA = 24;
-const auto naluTypeFUA = 28;
+const auto naluTypeBitmask = std::byte(0x1F);
+const auto naluTypeSTAPA = std::byte(24);
+const auto naluTypeFUA = std::byte(28);
 const auto stapaHeaderSize = 1;
 const auto fuaHeaderSize = 2;
 const auto rtpHeaderSize = 12;
@@ -42,9 +42,9 @@ void depacketize_h264() {
 	auto pktParsed = reinterpret_cast<const rtc::RtpHeader *>(pkt.data());
 	auto headerSize = rtpHeaderSize + pktParsed->csrcCount() +
 			  pktParsed->getExtensionHeaderSize();
-	auto naluType = pktParsed->getBody()[0] & naluTypeBitmask;
+	auto naluType = pkt.at(headerSize) & naluTypeBitmask;
 
-	if (naluType > 0 && naluType < 24) {
+	if (naluType > std::byte(0) && naluType < std::byte(24)) {
 		auto h264_nalu = h264_nalu_header();
 		std::copy(pkt.begin() + headerSize, pkt.end(),
 			  std::back_inserter(h264_nalu));
